@@ -48,6 +48,11 @@ class RAGMCPServer:
         if self.rag_pipeline is None:
             raise ValueError("Failed to initialize RAG pipeline")
 
+        # Pre-load Falcon at startup so first chat message is fast
+        logger.info("Pre-loading Falcon model...")
+        self._shared_agent = RAGAgent(rag_pipeline=self.rag_pipeline)
+        logger.info("Falcon model ready.")
+
         self.chat_sessions = {}
         self.current_session_id = None
         self._setup_handlers()
@@ -222,14 +227,15 @@ class RAGMCPServer:
 
                 session_id = arguments.get("session_id") or str(uuid.uuid4())
 
-                agent = RAGAgent(rag_pipeline=self.rag_pipeline)
+                # Reuse shared agent — reset history for new session
+                self._shared_agent.history = []
                 self.chat_sessions[session_id] = {
-                    "agent": agent,
+                    "agent": self._shared_agent,
                     "created_at": asyncio.get_event_loop().time(),
                 }
                 self.current_session_id = session_id
 
-                logger.debug(f"Started new chat session with RAGAgent: {session_id}")
+                logger.debug(f"Started new chat session: {session_id}")
                 return [
                     TextContent(
                         type="text", text=f"Chat session started with ID: {session_id}"
@@ -259,7 +265,8 @@ class RAGMCPServer:
 
                 try:
                     agent.observe(message, "user")
-                    response = agent.act()
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, agent.act)
 
                     logger.debug(
                         f"Chat response generated using RAGAgent for session {session_id}"
@@ -317,7 +324,8 @@ class RAGMCPServer:
 
                 snippets, sources = self.rag_pipeline.run(query)
 
-                if not snippets or snippets == ["I do not know"]:
+                from src.rag import NO_INFO
+                if not snippets or snippets == [NO_INFO]:
                     result_text = (
                         f"No relevant aviation information found for: '{query}'"
                     )
@@ -330,25 +338,6 @@ class RAGMCPServer:
                     f"Search completed for query: '{query}' - {len(snippets)} results"
                 )
                 return [TextContent(type="text", text=result_text)]
-
-            elif name == "generate_answer":
-                question = arguments.get("question", "").strip()
-
-                if not question:
-                    return [TextContent(type="text", text="Question cannot be empty")]
-
-                try:
-                    answer = self.rag_pipeline.generate_answer(question)  # type: ignore
-                    logger.debug(f"Answer generated for question: '{question}'")
-                    return [TextContent(type="text", text=answer)]
-
-                except Exception as e:
-                    logger.error(f"Error generating answer: {e}")
-                    return [
-                        TextContent(
-                            type="text", text=f"Error generating answer: {str(e)}"
-                        )
-                    ]
 
             elif name == "health_check":
                 try:
@@ -401,11 +390,6 @@ class RAGMCPServer:
                     agent._tokenizer = None
 
             self.chat_sessions.clear()
-
-            if self.rag_pipeline and hasattr(self.rag_pipeline, "_gen"):
-                delattr(self.rag_pipeline, "_gen")
-            if self.rag_pipeline and hasattr(self.rag_pipeline, "_tokenizer"):
-                delattr(self.rag_pipeline, "_tokenizer")
 
             import gc
 
