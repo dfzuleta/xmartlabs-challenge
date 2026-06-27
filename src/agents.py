@@ -56,17 +56,29 @@ class BaseAgent:
 
 class RAGAgent(BaseAgent):
     SYSTEM_PROMPT = (
-        "You are an advanced AI aviation expert with expertise in all areas of flight, aircraft systems, and aviation regulations. "
-        "You engage in thoughtful conversations about aviation, using chain-of-thought reasoning. "
-        "For each question, first analyze the provided context, think step by step, then provide a clear answer. "
-        "Consider previous conversation context when relevant. Be accurate, educational, and engaging."
+        "You are an aviation expert assistant for student pilots. "
+        "You answer questions ONLY using the provided document context. "
+        "If the context does not contain enough information to answer the question, say: "
+        "'I don't have enough information in the available documents to answer that.' "
+        "Do not make up facts or use knowledge outside the provided context. "
+        "Respond in 2-3 clear paragraphs. Be accurate and educational.\n\n"
+        "Examples:\n"
+        "Context: A steep turn is a turn with a bank angle of 45 degrees or more. "
+        "The pilot must apply back pressure to maintain altitude during the turn.\n"
+        "Question: What is a steep turn?\n"
+        "Answer: A steep turn is a flight maneuver performed with a bank angle of 45 degrees or more. "
+        "During a steep turn, the pilot must apply back pressure on the controls to maintain altitude, "
+        "as the increased bank reduces the vertical component of lift.\n\n"
+        "Context: I don't have information about that topic in the available documents.\n"
+        "Question: What is the capital of France?\n"
+        "Answer: I don't have enough information in the available documents to answer that."
     )
 
     CONTEXT_TEMPLATE = (
-        "Previous conversation context:\n{chat_history}\n\n"
-        "Current question: {question}\n\n"
-        "Relevant context from documents:\n{snippets}\n\n"
-        "Answer:"
+        "Previous conversation:\n{chat_history}\n\n"
+        "Context from documents:\n{snippets}\n\n"
+        "Question: {question}\n\n"
+        "Answer (use only the context above):"
     )
 
     def __init__(self, rag_pipeline: BaseRAGPipeline):
@@ -85,6 +97,13 @@ class RAGAgent(BaseAgent):
 
         return "\n".join(formatted)
 
+    def _build_retrieval_query(self, question: str) -> str:
+        """Enrich follow-up questions with the previous user turn for better FAISS retrieval."""
+        prev_user = [msg for msg, role in self.history[-4:-1] if role == "user"]
+        if prev_user:
+            return f"{prev_user[-1]} {question}"
+        return question
+
     def act(self) -> str:
         if not self.history:
             raise ValueError("No query in history to answer.")
@@ -92,7 +111,8 @@ class RAGAgent(BaseAgent):
         question = self.history[-1][0]
         logger.debug(f"Processing question: {question}")
 
-        content, sources = self.rag.run(question)
+        retrieval_query = self._build_retrieval_query(question)
+        content, sources = self.rag.run(retrieval_query)
         content_text = (
             "\n\n".join(content) if content else "No specific context available."
         )
