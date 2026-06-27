@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 from src.config import PDF_URL
 
 logger = logging.getLogger(__name__)
@@ -56,13 +59,58 @@ def setup_logging(debug: bool = False):
         os.environ["DISABLE_TQDM"] = "true"
 
 
-def run_evaluation():
-    try:
-        from src.evaluation import RAGEvaluator
+def run_direct_chat(vectorstore_path: str = "vector_store"):
+    from src.agents import RAGAgent
+    from src.rag import VectorStoreRAGPipeline
+    from src.vector_store import VectorStore
 
-        logger.info("TODO: Implement evaluation suite")
-    except ImportError:
-        logger.info("TODO: Implement evaluation suite")
+    print("Loading... please wait")
+    store = VectorStore(store_path=vectorstore_path)
+    store.load()
+    pipeline = VectorStoreRAGPipeline(vector_store=store)
+    agent = RAGAgent(rag_pipeline=pipeline)
+    print("Ready! Type your question or 'quit' to exit.")
+    print("-" * 50)
+
+    while True:
+        try:
+            question = input("You: ").strip()
+            if not question:
+                continue
+            if question.lower() in ["quit", "exit", "q"]:
+                print("Bye!")
+                break
+            agent.observe(question, "user")
+            response = agent.act()
+            print(f"\nAgent: {response}\n")
+        except KeyboardInterrupt:
+            print("\nBye!")
+            break
+
+
+def run_evaluation():
+    from src.config import BASIC_CORPUS
+    from src.evaluation import RAGEvaluator
+    from src.rag import VectorStoreRAGPipeline
+    from src.vector_store import VectorStore
+
+    print("Initializing evaluation...")
+
+    store = VectorStore(store_path="vector_store")
+    if not store.load():
+        print("Vector store not found, using basic corpus...")
+        basic_chunks = [
+            {"text": t, "page": "1", "chunk_id": str(i), "source": "basic_corpus"}
+            for i, t in enumerate(BASIC_CORPUS)
+        ]
+        store.add_documents(basic_chunks)
+
+    pipeline = VectorStoreRAGPipeline(vector_store=store)
+    evaluator = RAGEvaluator(vector_store=store, rag_pipeline=pipeline)
+
+    print("Running evaluation dataset...")
+    results = evaluator.run()
+    evaluator.report(results)
 
 
 def process_pdf(pdf_path: str, vectorstore_path: str = "vector_store"):
@@ -125,6 +173,16 @@ def main():
         default="vector_store",
     )
 
+    # Direct chat command (no MCP)
+    direct_chat_parser = subparsers.add_parser(
+        "direct-chat", help="Start interactive chat directly without MCP"
+    )
+    direct_chat_parser.add_argument(
+        "--vectorstore",
+        dest="vectorstore_path",
+        default="vector_store",
+    )
+
     # Evaluation command
     subparsers.add_parser("eval", help="Run the evaluation suite")
 
@@ -156,6 +214,8 @@ def main():
 
     if args.command == "chat":
         run_interactive_chat(getattr(args, "vectorstore_path", None))
+    elif args.command == "direct-chat":
+        run_direct_chat(getattr(args, "vectorstore_path", "vector_store"))
     elif args.command == "eval":
         run_evaluation()
     elif args.command == "process-pdf":
