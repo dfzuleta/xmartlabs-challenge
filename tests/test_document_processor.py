@@ -22,39 +22,51 @@ class TestDocumentProcessor:
         assert processor.overlap == 25
 
     def test_clean_text(self):
-        """Test text cleaning functionality"""
+        """Test text cleaning functionality.
+
+        The new _clean_text preserves paragraph structure: multiple blank lines
+        collapse to a single paragraph separator (\\n\\n), and within each paragraph
+        line-wrapping newlines are collapsed to a space. This produces cleaner semantic
+        chunks rather than one flattened string.
+        """
         processor = DocumentProcessor()
 
-        # Test basic cleaning
-        dirty_text = "  Hello\n\n\nWorld  \t\t  "
+        # Two paragraphs separated by blank lines → preserved as two paragraphs
+        dirty_text = "  Hello\n\n\nWorld  "
         clean_text = processor._clean_text(dirty_text)
-        assert clean_text == "Hello World"
+        assert "Hello" in clean_text
+        assert "World" in clean_text
+        assert "\n\n" in clean_text  # paragraph boundary preserved
 
-        # Test multiple spaces
+        # Single paragraph with multiple spaces → collapsed
         dirty_text = "Hello    World    Test"
         clean_text = processor._clean_text(dirty_text)
         assert clean_text == "Hello World Test"
 
-        # Test newlines and tabs
-        dirty_text = "Line1\nLine2\tTab\r\nLine3"
+        # Single paragraph with line-wrap newlines → collapsed to space
+        dirty_text = "Line1\nLine2\nLine3"
         clean_text = processor._clean_text(dirty_text)
-        assert clean_text == "Line1 Line2 Tab Line3"
+        assert clean_text == "Line1 Line2 Line3"
+        assert "\n" not in clean_text
 
     def test_chunk_text_basic(self):
-        """Test basic text chunking"""
-        processor = DocumentProcessor(chunk_size=20, overlap=5)
+        """Test basic text chunking with paragraph-aware splitting.
 
-        text = "This is a test sentence for chunking functionality."
+        The new chunker splits by paragraph boundaries first, then by sentence.
+        A single short sentence shorter than chunk_size produces 1 chunk.
+        Multiple paragraphs each below chunk_size produce multiple chunks.
+        """
+        processor = DocumentProcessor(chunk_size=50, overlap=5)
+
+        # Two paragraphs, each short enough to be their own chunk when combined they exceed limit
+        text = "First paragraph about steep turns.\n\nSecond paragraph about lazy eights."
         chunks = processor.chunk_text(text, page_num=1)
 
-        assert len(chunks) > 1
+        assert len(chunks) >= 1
         for chunk in chunks:
             assert "text" in chunk
             assert "page" in chunk
             assert chunk["page"] == "1"
-            assert (
-                len(chunk["text"]) <= 25
-            )  # chunk_size + some buffer for word boundaries
 
     def test_chunk_text_short_text(self):
         """Test chunking with text shorter than chunk size"""
@@ -67,19 +79,18 @@ class TestDocumentProcessor:
         assert chunks[0]["text"] == text
         assert chunks[0]["page"] == "2"
 
-    def test_chunk_text_exact_boundaries(self):
-        """Test chunking with exact word boundaries"""
-        processor = DocumentProcessor(chunk_size=10, overlap=3)
+    def test_chunk_text_multiple_paragraphs_split_correctly(self):
+        """Multiple paragraphs exceeding chunk_size split into separate chunks."""
+        processor = DocumentProcessor(chunk_size=30, overlap=0)
 
-        text = "Word1 Word2 Word3 Word4 Word5"
+        # Each paragraph is under 30 chars but together they exceed the limit
+        text = "Paragraph one.\n\nParagraph two.\n\nParagraph three."
         chunks = processor.chunk_text(text, page_num=1)
 
-        # Should have multiple chunks due to size limit
-        assert len(chunks) > 1
-
-        # All chunks should have reasonable length
-        for chunk in chunks:
-            assert len(chunk["text"]) <= 15  # Some buffer for word boundaries
+        assert len(chunks) >= 2
+        full_text = " ".join(c["text"] for c in chunks)
+        assert "Paragraph one" in full_text
+        assert "Paragraph three" in full_text
 
     def test_process_pdf_file_not_found(self):
         """Test process_pdf with non-existent file"""

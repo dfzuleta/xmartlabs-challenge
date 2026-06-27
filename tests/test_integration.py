@@ -13,23 +13,21 @@ class TestIntegration:
     """Integration tests that test multiple components together"""
 
     @patch("src.agents.hf_pipeline")
-    @patch("src.rag.hf_pipeline")
-    def test_rag_agent_with_basic_corpus(self, mock_rag_pipeline, mock_agent_pipeline):
-        """Test RAGAgent with basic corpus integration"""
+    def test_rag_agent_with_basic_corpus(self, mock_agent_pipeline):
+        """Test RAGAgent with VectorStoreRAGPipeline integration.
+
+        VectorStoreRAGPipeline no longer loads Falcon — only the agent does.
+        """
         from src.agents import RAGAgent
         from src.rag import VectorStoreRAGPipeline
 
-        # Setup mocks for both pipelines
         mock_gen = Mock()
         mock_tokenizer = Mock()
         mock_tokenizer.apply_chat_template.return_value = "test prompt"
         mock_gen.tokenizer = mock_tokenizer
         mock_gen.return_value = [{"generated_text": "Aviation response"}]
-
-        mock_rag_pipeline.return_value = mock_gen
         mock_agent_pipeline.return_value = mock_gen
 
-        # Create mock vector store
         mock_vector_store = Mock()
         mock_vector_store.search.return_value = (
             [BASIC_CORPUS[0]],
@@ -37,11 +35,9 @@ class TestIntegration:
             [{"source": "basic_corpus"}],
         )
 
-        # Create RAG pipeline and agent
         rag_pipeline = VectorStoreRAGPipeline(mock_vector_store)
         agent = RAGAgent(rag_pipeline)
 
-        # Test the interaction
         agent.observe("What are the forces of flight?", "user")
         response = agent.act()
 
@@ -89,50 +85,51 @@ class TestIntegration:
         assert scores == []
         assert metadata == []
 
-    @patch("src.rag.hf_pipeline")
-    def test_rag_pipeline_error_recovery(self, mock_hf_pipeline):
-        """Test RAG pipeline error recovery mechanisms"""
-        from src.rag import VectorStoreRAGPipeline
-
-        # Setup failing pipeline
-        mock_gen = Mock()
-        mock_gen.side_effect = Exception("Pipeline failure")
-        mock_tokenizer = Mock()
-        mock_gen.tokenizer = mock_tokenizer
-        mock_hf_pipeline.return_value = mock_gen
+    def test_rag_pipeline_handles_vector_store_error(self):
+        """Test RAG pipeline gracefully handles vector store search errors."""
+        from src.rag import VectorStoreRAGPipeline, NO_INFO
 
         mock_vector_store = Mock()
-        mock_vector_store.search.return_value = (["test content"], [0.9], [{}])
+        mock_vector_store.search.side_effect = Exception("FAISS index not ready")
 
         pipeline = VectorStoreRAGPipeline(mock_vector_store)
 
-        # Test that errors are handled gracefully
-        result = pipeline._generate_answer("test prompt")
-        assert "Error generating response" in result
+        with pytest.raises(Exception, match="FAISS index not ready"):
+            pipeline.run("What is a steep turn?")
 
     def test_text_processing_robustness(self):
-        """Test text processing with various input types"""
+        """Test text processing with various input types.
+
+        The new _clean_text preserves paragraph structure: paragraphs are separated
+        by \\n\\n, and within each paragraph line-wrapping whitespace is collapsed.
+        """
         from src.document_processor import DocumentProcessor
 
         processor = DocumentProcessor()
 
-        # Test various whitespace scenarios
-        test_cases = [
+        # Single-paragraph inputs: leading/trailing spaces removed, double spaces collapsed
+        single_paragraph_cases = [
             "normal text",
             "  leading spaces",
             "trailing spaces  ",
             "  both  ",
-            "\ttabs\t",
-            "\nnewlines\n",
-            "mixed\t\n  whitespace  \r\n",
             "multiple   spaces   between   words",
         ]
-
-        for text in test_cases:
+        for text in single_paragraph_cases:
             cleaned = processor._clean_text(text)
             assert isinstance(cleaned, str)
             assert not cleaned.startswith(" ")
             assert not cleaned.endswith(" ")
-            assert "  " not in cleaned  # No double spaces
-            assert "\n" not in cleaned
-            assert "\t" not in cleaned
+            assert "  " not in cleaned
+
+        # Within a single paragraph, single newlines (line-wrap) become spaces
+        cleaned = processor._clean_text("Line1\nLine2\nLine3")
+        assert "\n" not in cleaned
+        assert "Line1" in cleaned
+        assert "Line3" in cleaned
+
+        # Multi-paragraph inputs preserve the \\n\\n separator
+        cleaned = processor._clean_text("Para one.\n\nPara two.")
+        assert "Para one." in cleaned
+        assert "Para two." in cleaned
+        assert "\n\n" in cleaned

@@ -160,8 +160,8 @@ class TestRAGAgent:
         agent = RAGAgent(mock_rag_pipeline)
 
         assert agent.rag == mock_rag_pipeline
-        assert "Captain Pilot" in agent.system_prompt
         assert "aviation expert" in agent.system_prompt
+        assert "student pilots" in agent.system_prompt
 
     @patch("src.agents.hf_pipeline")
     def test_format_chat_history_empty(self, mock_hf_pipeline):
@@ -348,3 +348,63 @@ class TestRAGAgent:
         result = agent.pretty_print_answer("Regular answer text")
 
         assert result == "Regular answer text"
+
+    @patch("src.agents.hf_pipeline")
+    def test_build_retrieval_query_no_prior_context(self, mock_hf_pipeline):
+        """First question in session returns question unchanged."""
+        mock_gen = Mock()
+        mock_gen.tokenizer = Mock()
+        mock_hf_pipeline.return_value = mock_gen
+
+        mock_rag_pipeline = Mock(spec=BaseRAGPipeline)
+        agent = RAGAgent(mock_rag_pipeline)
+        agent.history = [("What is a steep turn?", "user")]
+
+        result = agent._build_retrieval_query("What is a steep turn?")
+
+        assert result == "What is a steep turn?"
+
+    @patch("src.agents.hf_pipeline")
+    def test_build_retrieval_query_enriches_follow_up(self, mock_hf_pipeline):
+        """Follow-up question is enriched with previous user question for FAISS context."""
+        mock_gen = Mock()
+        mock_gen.tokenizer = Mock()
+        mock_hf_pipeline.return_value = mock_gen
+
+        mock_rag_pipeline = Mock(spec=BaseRAGPipeline)
+        agent = RAGAgent(mock_rag_pipeline)
+        agent.history = [
+            ("What is a steep turn?", "user"),
+            ("A steep turn is a maneuver with 45-degree bank.", "assistant"),
+            ("And how do I perform it?", "user"),
+        ]
+
+        result = agent._build_retrieval_query("And how do I perform it?")
+
+        assert "What is a steep turn?" in result
+        assert "And how do I perform it?" in result
+
+    @patch("src.agents.hf_pipeline")
+    def test_act_uses_enriched_retrieval_query_for_follow_up(self, mock_hf_pipeline):
+        """act() enriches follow-up questions before calling rag.run — not the raw question."""
+        mock_gen = Mock()
+        mock_tokenizer = Mock()
+        mock_tokenizer.apply_chat_template.return_value = "formatted prompt"
+        mock_gen.tokenizer = mock_tokenizer
+        mock_gen.return_value = [{"generated_text": "Answer about steep turns"}]
+        mock_hf_pipeline.return_value = mock_gen
+
+        mock_rag_pipeline = Mock(spec=BaseRAGPipeline)
+        mock_rag_pipeline.run.return_value = (["Context about steep turns"], [0])
+
+        agent = RAGAgent(mock_rag_pipeline)
+        agent.history = [
+            ("What is a steep turn?", "user"),
+            ("A steep turn uses 45-degree bank.", "assistant"),
+        ]
+        agent.observe("And how do I perform it?", "user")
+        agent.act()
+
+        called_query = mock_rag_pipeline.run.call_args[0][0]
+        assert "What is a steep turn?" in called_query
+        assert "And how do I perform it?" in called_query
